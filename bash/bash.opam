@@ -4,8 +4,8 @@ version: "0.1"
 synopsis: "An interpreter for Bash language"
 description:
   "Supports functions, compound, extensions, working with arrays and redirects"
-maintainer: ["Ksenia Kuzmina"]
-authors: ["Ksenia Kuzmina"]
+maintainer: ["Kseniia Kuzmina"]
+authors: ["Kseniia Kuzmina"]
 license: "LGPL-3.0-or-later"
 homepage: "https://github.com/sayumikko/fp2022"
 bug-reports: "https://github.com/sayumikko/fp2022/issues"

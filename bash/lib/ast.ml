@@ -19,7 +19,10 @@ and pipeline =
   | OrList of pipeline list (* pipe1 || pipe2 *)
 [@@deriving show { with_path = false }]
 
-and const = Int of int | String of string | Bool of bool
+and const =
+  | Int of int
+  | String of string
+  | Bool of bool
 [@@deriving show { with_path = false }]
 
 and const_lst = const list [@@deriving show { with_path = false }]
@@ -55,16 +58,12 @@ and var = string * string [@@deriving show { with_path = false }]
 
 and compound =
   | IfElse of
-      expr
-      * command list
-      * command list option (* if {expression} {block} else {block} *)
+      expr * command list * command list option (* if {expression} {block} else {block} *)
   | While of expr * command list (* while {expr} {block} *)
   | For of expr * expr * expr * command list
     (* for ({expression}; {expression}; {expression}) do {block} ... *)
   | ForIn of
-      expr
-      * expr list
-      * command list (* for {var} in {expressions} do {block} done *)
+      expr * expr list * command list (* for {var} in {expressions} do {block} done *)
   | Case of expr * (expr list * command list) list
     (* case {expr} in {expr1}) {block1};; {expr2}) {block2}... *)
 [@@deriving show { with_path = false }]
@@ -95,8 +94,9 @@ and redirect =
 
 and funcn = string * command list [@@deriving show { with_path = false }]
 
-type declaration = Funcn of funcn | Pipeline of pipeline
+type declaration =
+  | Funcn of funcn
+  | Pipeline of pipeline
 [@@deriving show { with_path = false }]
 
-type ast = Declarations of declaration list
-[@@deriving show { with_path = false }]
+type ast = Declarations of declaration list [@@deriving show { with_path = false }]

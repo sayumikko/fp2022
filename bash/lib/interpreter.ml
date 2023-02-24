@@ -18,12 +18,13 @@ module Result : MonadFail with type 'a t = ('a, string) result = struct
   let ( >>= ) = Result.bind
   let ( >>| ) f g = f >>= fun x -> return (g x)
   let ( *> ) f g = f >>= fun _ -> return g
+  let ( <* ) f g = f >>= fun e -> return g >>= fun _ -> return e
 
-  let ( <* ) f g =
-    f >>= fun e ->
-    return g >>= fun _ -> return e
-
-  let ( <|> ) f g = match f with Ok _ -> f | Error _ -> g
+  let ( <|> ) f g =
+    match f with
+    | Ok _ -> f
+    | Error _ -> g
+  ;;
 end
 
 type iconst =
@@ -49,6 +50,7 @@ end = struct
     Format.fprintf ppf "[";
     M.iter (fun k v -> Format.fprintf ppf "[%s] = %a" k pp_iconst v) t;
     Format.fprintf ppf "]"
+  ;;
 
   let show m = Format.asprintf "%a" pp m
   let find_opt = M.find_opt
@@ -61,6 +63,7 @@ let c2icl = function
   | Ast.Int x -> Int x
   | Ast.Bool x -> Bool x
   | Ast.String x -> String x
+;;
 
 module VarsMap : sig
   type t [@@deriving show { with_path = false }]
@@ -77,6 +80,7 @@ end = struct
     Format.fprintf ppf "[";
     M.iter (fun k v -> Format.fprintf ppf "[%s] = %a" k ConstMap.pp v) t;
     Format.fprintf ppf "]"
+  ;;
 
   let show m = Format.asprintf "%a" pp m
   let find_opt = M.find_opt
@@ -101,6 +105,7 @@ end = struct
     Format.fprintf ppf "[";
     M.iter (fun k _ -> Format.fprintf ppf "[%s()]" k) t;
     Format.fprintf ppf "]"
+  ;;
 
   let show m = Format.asprintf "%a" pp m
   let find_opt = M.find_opt
@@ -125,6 +130,7 @@ module TMap (T : PpOrderedType) = struct
     fprintf ppf "@[[@[";
     iter (fun k v -> fprintf ppf "@[%a: %a@],@\n" T.pp_t k pp_v v) m;
     fprintf ppf "@]]@]"
+  ;;
 end
 
 module IMap = TMap (struct
@@ -133,14 +139,14 @@ module IMap = TMap (struct
   let pp_t = Format.pp_print_int
 end)
 
-type context = {
-  vars : VarsMap.t;
-  functions : FuncMap.t;
-  retcode : int;
-  chs : Unix.file_descr IMap.t;
-      [@printer fun fmt m -> IMap.pp (fun fmt _ -> fprintf fmt "[...]") fmt m]
-  last_exec : iconst;
-}
+type context =
+  { vars : VarsMap.t
+  ; functions : FuncMap.t
+  ; retcode : int
+  ; chs : Unix.file_descr IMap.t
+       [@printer fun fmt m -> IMap.pp (fun fmt _ -> fprintf fmt "[...]") fmt m]
+  ; last_exec : iconst
+  }
 [@@deriving show { with_path = false }]
 
 let show_ctx = show_context
@@ -149,13 +155,13 @@ module Interpret (M : MonadFail) = struct
   open M
 
   let empty_ctx =
-    {
-      vars = VarsMap.empty;
-      functions = FuncMap.empty;
-      retcode = 0;
-      chs = Unix.(IMap.of_list [ (0, stdin); (1, stdout); (2, stderr) ]);
-      last_exec = Int 0;
+    { vars = VarsMap.empty
+    ; functions = FuncMap.empty
+    ; retcode = 0
+    ; chs = Unix.(IMap.of_list [ 0, stdin; 1, stdout; 2, stderr ])
+    ; last_exec = Int 0
     }
+  ;;
 
   (** Finds a variable by name *)
   let rec get_var name ctx = VarsMap.find_opt name ctx.vars
@@ -163,7 +169,8 @@ module Interpret (M : MonadFail) = struct
   (** Adds a variable to the current context *)
   and set_var ctx name index value =
     let ret_wv x c = return { c with vars = VarsMap.replace name x c.vars } in
-    interpret_expression value ctx >>= fun nctx ->
+    interpret_expression value ctx
+    >>= fun nctx ->
     match VarsMap.find_opt name nctx.vars with
     | Some v -> ret_wv (ConstMap.replace index nctx.last_exec v) nctx
     | None -> ret_wv (ConstMap.replace index nctx.last_exec ConstMap.empty) nctx
@@ -180,22 +187,23 @@ module Interpret (M : MonadFail) = struct
     in
     match value with
     | hd :: tl ->
-        interpret_expression hd ctx >>= fun new_ctx ->
-        to_string new_ctx.last_exec >>= fun str ->
-        (match VarsMap.find_opt name ctx.vars with
-        | Some v ->
-            ret_wv
-              (ConstMap.replace
-                 (string_of_int (List.length args_list))
-                 (String str) v)
-              ctx
-        | None ->
-            ret_wv
-              (ConstMap.replace
-                 (string_of_int (List.length args_list))
-                 (String str) ConstMap.empty)
-              ctx)
-        >>= fun nctx -> set_array nctx name tl (List.append args_list [ str ])
+      interpret_expression hd ctx
+      >>= fun new_ctx ->
+      to_string new_ctx.last_exec
+      >>= fun str ->
+      (match VarsMap.find_opt name ctx.vars with
+       | Some v ->
+         ret_wv
+           (ConstMap.replace (string_of_int (List.length args_list)) (String str) v)
+           ctx
+       | None ->
+         ret_wv
+           (ConstMap.replace
+              (string_of_int (List.length args_list))
+              (String str)
+              ConstMap.empty)
+           ctx)
+      >>= fun nctx -> set_array nctx name tl (List.append args_list [ str ])
     | [] -> return ctx
 
   (** Adds an associative array to the current context *)
@@ -209,17 +217,18 @@ module Interpret (M : MonadFail) = struct
       | _ -> fail "Wrong pattern"
     in
     match value with
-    | hd :: tl -> (
-        match hd with
-        | key, elem ->
-            interpret_expression elem ctx >>= fun new_ctx ->
-            to_string new_ctx.last_exec >>= fun str ->
-            (match VarsMap.find_opt name ctx.vars with
-            | Some v -> ret_wv (ConstMap.replace key (String str) v) ctx
-            | None ->
-                ret_wv (ConstMap.replace key (String str) ConstMap.empty) ctx)
-            >>= fun nctx ->
-            set_associative_array nctx name tl (List.append args_list [ str ]))
+    | hd :: tl ->
+      (match hd with
+       | key, elem ->
+         interpret_expression elem ctx
+         >>= fun new_ctx ->
+         to_string new_ctx.last_exec
+         >>= fun str ->
+         (match VarsMap.find_opt name ctx.vars with
+          | Some v -> ret_wv (ConstMap.replace key (String str) v) ctx
+          | None -> ret_wv (ConstMap.replace key (String str) ConstMap.empty) ctx)
+         >>= fun nctx ->
+         set_associative_array nctx name tl (List.append args_list [ str ]))
     | [] -> return ctx
 
   and set_funcn name block ctx =
@@ -239,46 +248,40 @@ module Interpret (M : MonadFail) = struct
     | BraceExpansion bexp -> interpret_brace_expansion ctx bexp
     | ParameterExpansion pexp -> interpret_param_expansion pexp ctx
     | ArithmeticExpansion aexp ->
-        interpret_expression aexp ctx >>= fun nctx ->
-        return { ctx with last_exec = nctx.last_exec }
+      interpret_expression aexp ctx
+      >>= fun nctx -> return { ctx with last_exec = nctx.last_exec }
     | CommandSubstitution cmdsb ->
-        interpret_command_substtitution cmdsb ctx >>= fun nctx ->
-        return { ctx with last_exec = nctx.last_exec }
+      interpret_command_substtitution cmdsb ctx
+      >>= fun nctx -> return { ctx with last_exec = nctx.last_exec }
     | _ -> return ctx
 
   (** Interprets redirections *)
   and interpret_redirection ctx redir =
     match redir with
     | hd :: tl ->
-        (match hd with
-        | RedirectInput (Const (String in_redir)) ->
-            return
-              {
-                ctx with
-                chs =
-                  IMap.add 0 Unix.(openfile in_redir [ O_RDONLY ] 0o640) ctx.chs;
-              }
-        | RedirectOutput (Const (String out_redir)) ->
-            return
-              {
-                ctx with
-                chs =
-                  IMap.add 1
-                    Unix.(openfile out_redir [ O_CREAT; O_WRONLY ] 0o640)
-                    ctx.chs;
-              }
-        | AppendRedirOutput (Const (String app_redir)) ->
-            return
-              {
-                ctx with
-                chs =
-                  IMap.add 1
-                    Unix.(
-                      openfile app_redir [ O_CREAT; O_WRONLY; O_APPEND ] 0o640)
-                    ctx.chs;
-              }
-        | _ -> return ctx)
-        >>= fun new_ctx -> interpret_redirection new_ctx tl
+      (match hd with
+       | RedirectInput (Const (String in_redir)) ->
+         return
+           { ctx with
+             chs = IMap.add 0 Unix.(openfile in_redir [ O_RDONLY ] 0o640) ctx.chs
+           }
+       | RedirectOutput (Const (String out_redir)) ->
+         return
+           { ctx with
+             chs =
+               IMap.add 1 Unix.(openfile out_redir [ O_CREAT; O_WRONLY ] 0o640) ctx.chs
+           }
+       | AppendRedirOutput (Const (String app_redir)) ->
+         return
+           { ctx with
+             chs =
+               IMap.add
+                 1
+                 Unix.(openfile app_redir [ O_CREAT; O_WRONLY; O_APPEND ] 0o640)
+                 ctx.chs
+           }
+       | _ -> return ctx)
+      >>= fun new_ctx -> interpret_redirection new_ctx tl
     | [] -> return ctx
 
   (** Interprets command substitution *)
@@ -287,7 +290,8 @@ module Interpret (M : MonadFail) = struct
     let oldch = ctx.chs in
     let rstrip = Base.String.rstrip in
     let pctx = { ctx with chs = IMap.add 1 write_end ctx.chs } in
-    interpret_command pctx cmd >>= fun nctx ->
+    interpret_command pctx cmd
+    >>= fun nctx ->
     Unix.close write_end;
     let res = In_channel.input_all (Unix.in_channel_of_descr read_end) in
     Unix.close read_end;
@@ -297,23 +301,28 @@ module Interpret (M : MonadFail) = struct
   and interpret_brace_expansion ctx bexp =
     let beg =
       match bexp with
-      | hd :: _ -> ( match hd with Const (String str) -> str | _ -> "")
+      | hd :: _ ->
+        (match hd with
+         | Const (String str) -> str
+         | _ -> "")
       | _ -> ""
     in
     let ending =
       match bexp with
-      | _ :: ending :: _ -> (
-          match ending with Const (String str) -> str | _ -> "")
+      | _ :: ending :: _ ->
+        (match ending with
+         | Const (String str) -> str
+         | _ -> "")
       | _ -> ""
     in
     let rec interpret_bexp ctx bexp list =
       match bexp with
-      | hd :: tl -> (
-          match hd with
-          | Const (String str) ->
-              return (List.append list [ beg ^ str ^ ending ]) >>= fun list ->
-              interpret_bexp ctx tl list
-          | _ -> interpret_bexp ctx tl list)
+      | hd :: tl ->
+        (match hd with
+         | Const (String str) ->
+           return (List.append list [ beg ^ str ^ ending ])
+           >>= fun list -> interpret_bexp ctx tl list
+         | _ -> interpret_bexp ctx tl list)
       | [] -> return { ctx with last_exec = StringList list }
     in
     match bexp with
@@ -331,9 +340,10 @@ module Interpret (M : MonadFail) = struct
     in
     match double_q with
     | hd :: tl ->
-        interpret_expression hd ctx >>= fun new_ctx ->
-        matching_iconst new_ctx.last_exec >>= fun new_str ->
-        interpret_double_quotes tl new_ctx (str ^ new_str)
+      interpret_expression hd ctx
+      >>= fun new_ctx ->
+      matching_iconst new_ctx.last_exec
+      >>= fun new_str -> interpret_double_quotes tl new_ctx (str ^ new_str)
     | _ -> return { ctx with last_exec = String str }
 
   (** Interprets var by name and index trying to replace the type where possible *)
@@ -342,44 +352,42 @@ module Interpret (M : MonadFail) = struct
       match v with
       | Int n -> return { ctx with last_exec = Int n }
       | Bool b -> return { ctx with last_exec = Bool b }
-      | String s -> (
-          match int_of_string_opt s with
-          | Some num -> return { ctx with last_exec = Int num }
-          | None -> (
-              match bool_of_string_opt s with
-              | Some b -> return { ctx with last_exec = Bool b }
-              | None -> return { ctx with last_exec = String s }))
+      | String s ->
+        (match int_of_string_opt s with
+         | Some num -> return { ctx with last_exec = Int num }
+         | None ->
+           (match bool_of_string_opt s with
+            | Some b -> return { ctx with last_exec = Bool b }
+            | None -> return { ctx with last_exec = String s }))
       | _ -> return ctx
     in
     match var with
-    | name, i -> (
-        match get_var name ctx with
-        | Some v -> (
-            match ConstMap.find_opt i v with
-            | Some v -> interpret_value v
-            | None -> (
-                match ConstMap.find_opt "" v with
-                | Some v -> (
-                    match v with
-                    | StringList ls -> (
-                        match int_of_string_opt i with
-                        | Some i ->
-                            if i > List.length ls then
-                              return { ctx with last_exec = String "" }
-                            else
-                              return (List.nth ls i) >>= fun v ->
-                              interpret_value (String v)
-                        | None ->
-                            return (List.nth ls 0) >>= fun v ->
-                            interpret_value (String v))
-                    | _ -> return ctx)
-                | None -> return ctx))
-        | None -> return ctx)
+    | name, i ->
+      (match get_var name ctx with
+       | Some v ->
+         (match ConstMap.find_opt i v with
+          | Some v -> interpret_value v
+          | None ->
+            (match ConstMap.find_opt "" v with
+             | Some v ->
+               (match v with
+                | StringList ls ->
+                  (match int_of_string_opt i with
+                   | Some i ->
+                     if i > List.length ls
+                     then return { ctx with last_exec = String "" }
+                     else return (List.nth ls i) >>= fun v -> interpret_value (String v)
+                   | None ->
+                     return (List.nth ls 0) >>= fun v -> interpret_value (String v))
+                | _ -> return ctx)
+             | None -> return ctx))
+       | None -> return ctx)
 
   (** Interperts bash parameter expansion *)
   and interpret_param_expansion pexp ctx =
     let matching_iconst var =
-      interpret_variable ctx var >>= fun new_ctx ->
+      interpret_variable ctx var
+      >>= fun new_ctx ->
       match new_ctx.last_exec with
       | Bool s -> return (string_of_bool s)
       | Int s -> return (string_of_int s)
@@ -387,127 +395,136 @@ module Interpret (M : MonadFail) = struct
       | _ -> return ""
     in
     let removing reg_size ~all ~beg var pat s =
-      matching_iconst var >>= fun str ->
-      match (str, Base.String.for_all str ~f:(fun c -> c = '*')) with
+      matching_iconst var
+      >>= fun str ->
+      match str, Base.String.for_all str ~f:(fun c -> c = '*') with
       | "", true -> return { ctx with last_exec = String "" }
       | _ ->
-          let cond g =
-            let c =
-              match beg with
-              | None -> true
-              | Some true -> Re.Group.start g 0 = 0
-              | Some false -> Re.Group.stop g 0 = String.length str
-            in
-            if c then s else Re.Group.get g 0
+        let cond g =
+          let c =
+            match beg with
+            | None -> true
+            | Some true -> Re.Group.start g 0 = 0
+            | Some false -> Re.Group.stop g 0 = String.length str
           in
-          let re = Re.Glob.glob pat |> reg_size |> Re.compile in
-          return
-            {
-              ctx with
-              last_exec =
-                String
-                  (Re.replace ~all:(all || beg = Some false) re ~f:cond str);
-            }
+          if c then s else Re.Group.get g 0
+        in
+        let re = Re.Glob.glob pat |> reg_size |> Re.compile in
+        return
+          { ctx with
+            last_exec = String (Re.replace ~all:(all || beg = Some false) re ~f:cond str)
+          }
     in
     let turn_regexp pat = return (Str.regexp pat) in
     match pexp with
     | Offset (var, Const (Int offset)) ->
-        matching_iconst var >>= fun s ->
-        return
-          {
-            ctx with
-            last_exec = String (String.sub s offset (String.length s - offset));
-          }
+      matching_iconst var
+      >>= fun s ->
+      return
+        { ctx with last_exec = String (String.sub s offset (String.length s - offset)) }
     | OffsetLen (var, Const (Int offset), Const (Int len)) ->
-        matching_iconst var >>= fun s ->
-        return { ctx with last_exec = String (String.sub s offset len) }
+      matching_iconst var
+      >>= fun s -> return { ctx with last_exec = String (String.sub s offset len) }
     | Length var ->
-        matching_iconst var >>= fun s ->
-        return { ctx with last_exec = Int (String.length s) }
+      matching_iconst var
+      >>= fun s -> return { ctx with last_exec = Int (String.length s) }
     | ReplFirst (var, Const (String pat), Const (String str)) ->
-        matching_iconst var >>= fun s ->
-        turn_regexp pat >>= fun pat ->
-        return { ctx with last_exec = String (Str.replace_first pat str s) }
+      matching_iconst var
+      >>= fun s ->
+      turn_regexp pat
+      >>= fun pat -> return { ctx with last_exec = String (Str.replace_first pat str s) }
     | ReplAll (var, Const (String pat), Const (String str)) ->
-        matching_iconst var >>= fun s ->
-        turn_regexp pat >>= fun pat ->
-        return { ctx with last_exec = String (Str.global_replace pat str s) }
+      matching_iconst var
+      >>= fun s ->
+      turn_regexp pat
+      >>= fun pat -> return { ctx with last_exec = String (Str.global_replace pat str s) }
     | ReplBeg (var, Const (String pat), Const (String str)) ->
-        matching_iconst var >>= fun s ->
-        turn_regexp pat >>= fun re ->
-        if Str.string_match re s 0 then
-          return { ctx with last_exec = String (Str.replace_first re str s) }
-        else return { ctx with last_exec = String s }
+      matching_iconst var
+      >>= fun s ->
+      turn_regexp pat
+      >>= fun re ->
+      if Str.string_match re s 0
+      then return { ctx with last_exec = String (Str.replace_first re str s) }
+      else return { ctx with last_exec = String s }
     | ReplEnd (var, Const (String pat), Const (String str)) ->
-        matching_iconst var >>= fun str_to_rep ->
-        turn_regexp pat >>= fun re ->
-        return (Str.search_backward re str_to_rep (String.length str_to_rep))
-        >>= fun pos ->
-        if pos >= String.length str_to_rep - String.length pat then
-          return
-            {
-              ctx with
-              last_exec =
-                String
-                  (String.sub str_to_rep 0 pos
-                  ^ Str.replace_first re str
-                      (String.sub str_to_rep pos
-                         (String.length str_to_rep - pos)));
-            }
-        else return { ctx with last_exec = String str_to_rep }
+      matching_iconst var
+      >>= fun str_to_rep ->
+      turn_regexp pat
+      >>= fun re ->
+      return (Str.search_backward re str_to_rep (String.length str_to_rep))
+      >>= fun pos ->
+      if pos >= String.length str_to_rep - String.length pat
+      then
+        return
+          { ctx with
+            last_exec =
+              String
+                (String.sub str_to_rep 0 pos
+                ^ Str.replace_first
+                    re
+                    str
+                    (String.sub str_to_rep pos (String.length str_to_rep - pos)))
+          }
+      else return { ctx with last_exec = String str_to_rep }
     | RemShortFromBeg (var, Const (String pat)) ->
-        removing Re.shortest ~all:false ~beg:(Some true) var pat ""
+      removing Re.shortest ~all:false ~beg:(Some true) var pat ""
     | RemLargFromBeg (var, Const (String pat)) ->
-        removing Re.longest ~all:false ~beg:(Some true) var pat ""
+      removing Re.longest ~all:false ~beg:(Some true) var pat ""
     | RemShortFromEnd (var, Const (String pat)) ->
-        removing Re.shortest ~all:false ~beg:(Some false) var pat ""
+      removing Re.shortest ~all:false ~beg:(Some false) var pat ""
     | RemLargFromEnd (var, Const (String pat)) ->
-        removing Re.longest ~all:false ~beg:(Some false) var pat ""
-    | UseDefValue ((name, index), Const (String word)) -> (
-        match get_var name ctx with
-        | Some v -> (
-            match ConstMap.find_opt index v with
-            | Some _ -> interpret_variable ctx (name, index)
-            | None -> return { ctx with last_exec = String word })
-        | None -> return { ctx with last_exec = String word })
-    | SetDefValue ((name, index), Const (String word)) -> (
-        match get_var name ctx with
-        | Some v -> (
-            match ConstMap.find_opt index v with
-            | Some _ -> (
-                interpret_variable ctx (name, index) >>= fun new_ctx ->
-                match new_ctx.last_exec with
-                | String "" -> return { new_ctx with last_exec = String word }
-                | _ -> return new_ctx)
-            | None -> return { ctx with last_exec = String word })
-        | None -> return { ctx with last_exec = String word })
-    | UseAlterValue ((name, index), Const (String word)) -> (
-        match get_var name ctx with
-        | Some v -> (
-            match ConstMap.find_opt index v with
-            | Some _ -> (
-                interpret_variable ctx (name, index) >>= fun new_ctx ->
-                match new_ctx.last_exec with
-                | String "" -> return new_ctx
-                | _ -> return { new_ctx with last_exec = String word })
-            | None -> return ctx)
-        | None -> return ctx)
+      removing Re.longest ~all:false ~beg:(Some false) var pat ""
+    | UseDefValue ((name, index), Const (String word)) ->
+      (match get_var name ctx with
+       | Some v ->
+         (match ConstMap.find_opt index v with
+          | Some _ -> interpret_variable ctx (name, index)
+          | None -> return { ctx with last_exec = String word })
+       | None -> return { ctx with last_exec = String word })
+    | SetDefValue ((name, index), Const (String word)) ->
+      (match get_var name ctx with
+       | Some v ->
+         (match ConstMap.find_opt index v with
+          | Some _ ->
+            interpret_variable ctx (name, index)
+            >>= fun new_ctx ->
+            (match new_ctx.last_exec with
+             | String "" -> return { new_ctx with last_exec = String word }
+             | _ -> return new_ctx)
+          | None -> return { ctx with last_exec = String word })
+       | None -> return { ctx with last_exec = String word })
+    | UseAlterValue ((name, index), Const (String word)) ->
+      (match get_var name ctx with
+       | Some v ->
+         (match ConstMap.find_opt index v with
+          | Some _ ->
+            interpret_variable ctx (name, index)
+            >>= fun new_ctx ->
+            (match new_ctx.last_exec with
+             | String "" -> return new_ctx
+             | _ -> return { new_ctx with last_exec = String word })
+          | None -> return ctx)
+       | None -> return ctx)
     | _ -> return ctx
 
   (** Interperts arithmetic and comparison *)
   and interpret_binop operator ctx =
     let interpret_operator left right operator ctx =
-      interpret_expression left ctx >>= fun lctx ->
-      interpret_expression right lctx >>= fun rctx ->
-      match (lctx.last_exec, rctx.last_exec) with
+      interpret_expression left ctx
+      >>= fun lctx ->
+      interpret_expression right lctx
+      >>= fun rctx ->
+      match lctx.last_exec, rctx.last_exec with
       | Int _, Int y when y = 0 && operator = ( / ) -> fail "Division by zero"
       | Int x, Int y -> return { ctx with last_exec = Int (operator x y) }
       | _, _ -> fail "Operation not supported for non-int values"
     in
     let interpret_compare left right operator ctx =
-      interpret_expression left ctx >>= fun lctx ->
-      interpret_expression right lctx >>= fun rctx ->
-      match (lctx.last_exec, rctx.last_exec) with
+      interpret_expression left ctx
+      >>= fun lctx ->
+      interpret_expression right lctx
+      >>= fun rctx ->
+      match lctx.last_exec, rctx.last_exec with
       | Int x, Int y -> return { ctx with last_exec = Bool (operator x y) }
       | _, _ -> fail "Operation not supported for non-bool values"
     in
@@ -527,48 +544,53 @@ module Interpret (M : MonadFail) = struct
 
   (** Interprets conditional expressions *)
   and interpret_ifelse ctx cond bl else_bl =
-    interpret_expression cond ctx >>= fun cond_ctx ->
-    if cond_ctx.last_exec = Bool true then interpret_command_list cond_ctx bl
-    else
+    interpret_expression cond ctx
+    >>= fun cond_ctx ->
+    if cond_ctx.last_exec = Bool true
+    then interpret_command_list cond_ctx bl
+    else (
       match else_bl with
       | Some block -> interpret_command_list cond_ctx block
-      | None -> return { cond_ctx with retcode = 0 }
+      | None -> return { cond_ctx with retcode = 0 })
 
   (** Interprets while loop *)
   and interpret_while ctx cond block =
-    interpret_expression cond ctx >>= fun new_ctx ->
+    interpret_expression cond ctx
+    >>= fun new_ctx ->
     match new_ctx.last_exec with
     | Bool true ->
-        interpret_command_list new_ctx block >>= fun ctx ->
-        interpret_while ctx cond block
+      interpret_command_list new_ctx block >>= fun ctx -> interpret_while ctx cond block
     | Bool false -> return { ctx with retcode = 0 }
     | _ -> fail "Incorrect condition"
 
   (** Interprets for (expression form) *)
   and interpret_for ctx var cond incr block =
     let rec interpret_for_body ctx cond incr block =
-      interpret_expression cond ctx >>= fun nctx ->
+      interpret_expression cond ctx
+      >>= fun nctx ->
       match nctx.last_exec with
       | Bool true ->
-          interpret_command_list nctx block >>= fun nectx ->
-          interpret_expression incr nectx >>= fun new_ctx ->
-          interpret_for_body new_ctx cond incr block
+        interpret_command_list nctx block
+        >>= fun nectx ->
+        interpret_expression incr nectx
+        >>= fun new_ctx -> interpret_for_body new_ctx cond incr block
       | Bool false -> return { ctx with retcode = 0 }
       | _ -> fail "Incorrect condition"
     in
     match var with
     | Assignment ((name, index), value) ->
-        set_var ctx name index value >>= fun new_ctx ->
-        interpret_for_body new_ctx cond incr block
+      set_var ctx name index value
+      >>= fun new_ctx -> interpret_for_body new_ctx cond incr block
     | _ -> return ctx
 
   (** Interprets for (list form) *)
   and interpret_for_in ctx name index list block =
     match list with
     | hd :: tl ->
-        set_var ctx name index hd >>= fun new_ctx ->
-        interpret_command_list new_ctx block >>= fun nctx ->
-        interpret_for_in nctx name index tl block
+      set_var ctx name index hd
+      >>= fun new_ctx ->
+      interpret_command_list new_ctx block
+      >>= fun nctx -> interpret_for_in nctx name index tl block
     | [] -> return ctx
 
   (** Interprets bash case *)
@@ -583,34 +605,36 @@ module Interpret (M : MonadFail) = struct
     let rec interpret_pattern ctx pat =
       match pat with
       | hd :: tl ->
-          interpret_expression hd ctx >>= fun pat_ctx ->
-          if to_string pat_ctx.last_exec = to_string ctx.last_exec then
-            return hd
-          else interpret_pattern ctx tl
+        interpret_expression hd ctx
+        >>= fun pat_ctx ->
+        if to_string pat_ctx.last_exec = to_string ctx.last_exec
+        then return hd
+        else interpret_pattern ctx tl
       | [] -> return (Const (String ""))
     in
     match variable with
-    | Var var -> (
-        interpret_variable ctx var >>= fun new_ctx ->
-        match list with
-        | hd :: tl -> (
-            match hd with
-            | pattern, block -> (
-                interpret_pattern new_ctx pattern >>= fun expr ->
-                match expr with
-                | Const (String "") -> interpret_case new_ctx variable tl
-                | _ -> interpret_command_list new_ctx block))
-        | [] -> return ctx)
+    | Var var ->
+      interpret_variable ctx var
+      >>= fun new_ctx ->
+      (match list with
+       | hd :: tl ->
+         (match hd with
+          | pattern, block ->
+            interpret_pattern new_ctx pattern
+            >>= fun expr ->
+            (match expr with
+             | Const (String "") -> interpret_case new_ctx variable tl
+             | _ -> interpret_command_list new_ctx block))
+       | [] -> return ctx)
     | _ -> return ctx
 
   and interpret_compound ctx compound =
     match compound with
     | IfElse (condition, block, else_block) ->
-        interpret_ifelse ctx condition block else_block
+      interpret_ifelse ctx condition block else_block
     | While (condition, block) -> interpret_while ctx condition block
     | For (var, cond, incr, block) -> interpret_for ctx var cond incr block
-    | ForIn (Var (name, index), list, block) ->
-        interpret_for_in ctx name index list block
+    | ForIn (Var (name, index), list, block) -> interpret_for_in ctx name index list block
     | Case (expr, list) -> interpret_case ctx expr list
     | _ -> return ctx
 
@@ -643,11 +667,11 @@ module Interpret (M : MonadFail) = struct
         let () = IMap.iter dup2pipes ctx.chs in
         try execvpe p (Array.of_list args) (environment ()) with
         | Unix_error (ENOENT, _, _) ->
-            print_endline (List.hd args ^ ": command not found");
-            exit 127
+          print_endline (List.hd args ^ ": command not found");
+          exit 127
         | Unix_error (ENOEXEC, _, _) | Unix_error (EUNKNOWNERR 26, _, _) ->
-            print_endline (List.hd args ^ ": command not executable");
-            exit 126
+          print_endline (List.hd args ^ ": command not executable");
+          exit 126
       in
       (* Waiting for execution *)
       let rec wait_process pid =
@@ -656,15 +680,14 @@ module Interpret (M : MonadFail) = struct
           | WSIGNALED r | WSTOPPED r -> return { ctx with retcode = 128 + r }
         in
         let kill_pid pid =
-          try kill pid Sys.sigint
-          with Unix_error (EACCES, _, _) ->
-            print_endline "Cannot interrupt current process"
+          try kill pid Sys.sigint with
+          | Unix_error (EACCES, _, _) -> print_endline "Cannot interrupt current process"
         in
         match Unix.waitpid [] pid with
         | _, status -> return_rc status
         | exception Sys.Break ->
-            kill_pid pid;
-            wait_process pid
+          kill_pid pid;
+          wait_process pid
       in
       (* Forking *)
       match fork () with
@@ -672,7 +695,9 @@ module Interpret (M : MonadFail) = struct
       | pid -> wait_process pid
     in
     let rec interpret_sl sl str =
-      match sl with hd :: tl -> interpret_sl tl (str ^ hd) | [] -> str
+      match sl with
+      | hd :: tl -> interpret_sl tl (str ^ hd)
+      | [] -> str
     in
     let to_string iconst =
       match iconst with
@@ -684,22 +709,27 @@ module Interpret (M : MonadFail) = struct
     let oldchs = ctx.chs in
     let rec interpret_args ctx args str_args redir_args =
       match args with
-      | hd :: tl -> (
-          match hd with
-          | Redirect redir ->
-              return (List.append redir_args [ redir ]) >>= fun redirects ->
-              interpret_args ctx tl str_args redirects
-          | _ ->
-              interpret_expression hd ctx >>= fun new_ctx ->
-              return new_ctx.last_exec >>= fun ic ->
-              return (to_string ic) >>= fun str ->
-              (interpret_args new_ctx tl (Array.append str_args [| str |]))
-                redir_args)
+      | hd :: tl ->
+        (match hd with
+         | Redirect redir ->
+           return (List.append redir_args [ redir ])
+           >>= fun redirects -> interpret_args ctx tl str_args redirects
+         | _ ->
+           interpret_expression hd ctx
+           >>= fun new_ctx ->
+           return new_ctx.last_exec
+           >>= fun ic ->
+           return (to_string ic)
+           >>= fun str ->
+           (interpret_args new_ctx tl (Array.append str_args [| str |])) redir_args)
       | [] -> return (str_args, redir_args)
     in
-    interpret_args ctx arguments [||] [] >>= fun (arg_arr, redir_list) ->
-    interpret_redirection ctx redir_list >>= fun new_ctx ->
-    interpret_program name
+    interpret_args ctx arguments [||] []
+    >>= fun (arg_arr, redir_list) ->
+    interpret_redirection ctx redir_list
+    >>= fun new_ctx ->
+    interpret_program
+      name
       (name :: Array.to_list arg_arr)
       { ctx with last_exec = new_ctx.last_exec; chs = oldchs }
 
@@ -709,14 +739,13 @@ module Interpret (M : MonadFail) = struct
     let rec interpret_args ctx args =
       match args with
       | hd :: tl ->
-          set_var ctx (string_of_int (args_length - List.length tl)) "0" hd
-          >>= fun new_ctx -> interpret_args new_ctx tl
+        set_var ctx (string_of_int (args_length - List.length tl)) "0" hd
+        >>= fun new_ctx -> interpret_args new_ctx tl
       | [] -> return ctx
     in
     match FuncMap.find_opt name ctx.functions with
     | Some block ->
-        interpret_args ctx args >>= fun new_ctx ->
-        interpret_command_list new_ctx block
+      interpret_args ctx args >>= fun new_ctx -> interpret_command_list new_ctx block
     | None -> return ctx
 
   and interpret_command ctx cmd =
@@ -724,18 +753,24 @@ module Interpret (M : MonadFail) = struct
       match var with
       | Bool s -> return (string_of_bool s) >>= fun s -> return (s, [])
       | Int s -> return (string_of_int s) >>= fun s -> return (s, [])
-      | StringList sl -> (
-          match sl with hd :: tl -> return (hd, tl) | [] -> return ("", []))
-      | String s -> (
-          return (Str.split (Str.regexp " ") s) >>= fun sl ->
-          match sl with hd :: tl -> return (hd, tl) | [] -> return ("", []))
+      | StringList sl ->
+        (match sl with
+         | hd :: tl -> return (hd, tl)
+         | [] -> return ("", []))
+      | String s ->
+        return (Str.split (Str.regexp " ") s)
+        >>= fun sl ->
+        (match sl with
+         | hd :: tl -> return (hd, tl)
+         | [] -> return ("", []))
     in
     let rec expr_of_str str_list help_list =
       match str_list with
       | hd :: tl ->
-          return (Const (String hd)) >>= fun smth ->
-          return (List.append help_list [ smth ]) >>= fun new_list ->
-          expr_of_str tl new_list
+        return (Const (String hd))
+        >>= fun smth ->
+        return (List.append help_list [ smth ])
+        >>= fun new_list -> expr_of_str tl new_list
       | [] -> return help_list
     in
     match cmd with
@@ -743,62 +778,62 @@ module Interpret (M : MonadFail) = struct
     | Compound compound -> interpret_compound ctx compound
     | VarAssignment var -> interpret_var_assignment ctx var
     | Expression expr ->
-        interpret_expression expr ctx >>= fun new_ctx ->
-        matching_iconst new_ctx.last_exec >>= fun (name, args) ->
-        expr_of_str args [] >>= fun args ->
-        interpret_simple_command new_ctx name args
+      interpret_expression expr ctx
+      >>= fun new_ctx ->
+      matching_iconst new_ctx.last_exec
+      >>= fun (name, args) ->
+      expr_of_str args [] >>= fun args -> interpret_simple_command new_ctx name args
 
   (** Interprets pipeline, connecting stdin and stdout *)
   and interpret_pipe ctx pipe =
     let rec process_pipe cl_read ctx cmd pipe =
       match pipe with
       | hd :: tl ->
-          let read_end, write_end = Unix.pipe () in
-          interpret_command { ctx with chs = IMap.add 1 write_end ctx.chs } cmd
-          >>= fun _ ->
-          if cl_read then Unix.close (IMap.find 0 ctx.chs);
-          Unix.close write_end;
-          process_pipe true { ctx with chs = IMap.add 0 read_end ctx.chs } hd tl
+        let read_end, write_end = Unix.pipe () in
+        interpret_command { ctx with chs = IMap.add 1 write_end ctx.chs } cmd
+        >>= fun _ ->
+        if cl_read then Unix.close (IMap.find 0 ctx.chs);
+        Unix.close write_end;
+        process_pipe true { ctx with chs = IMap.add 0 read_end ctx.chs } hd tl
       | [] ->
-          interpret_command ctx cmd >>= fun nctx ->
-          if cl_read then Unix.close (IMap.find 0 ctx.chs);
-          return nctx.retcode
+        interpret_command ctx cmd
+        >>= fun nctx ->
+        if cl_read then Unix.close (IMap.find 0 ctx.chs);
+        return nctx.retcode
     in
     match pipe with
     | cmd :: [] -> interpret_command ctx cmd
     | cmd :: rest ->
-        process_pipe false ctx cmd rest >>= fun retcode ->
-        return { ctx with retcode }
+      process_pipe false ctx cmd rest >>= fun retcode -> return { ctx with retcode }
     | [] -> fail "More than one command should be in a pipe"
 
   (** Interprets and-pipeline (continues only if the left side is true) *)
   and interpret_and_pipes ctx pipes =
     match pipes with
-    | hd :: tl -> (
-        match hd with
-        | Pipe pipe ->
-            interpret_pipe ctx pipe >>= fun ctx ->
-            if ctx.retcode = 0 then interpret_and_pipes ctx tl else return ctx
-        | _ -> return ctx)
+    | hd :: tl ->
+      (match hd with
+       | Pipe pipe ->
+         interpret_pipe ctx pipe
+         >>= fun ctx -> if ctx.retcode = 0 then interpret_and_pipes ctx tl else return ctx
+       | _ -> return ctx)
     | [] -> return ctx
 
   (** Interprets or-pipeline (when the left side is true, pipeline finishes) *)
   and interpret_or_pipes ctx pipes =
     match pipes with
-    | hd :: tl -> (
-        match hd with
-        | Pipe pipe ->
-            interpret_pipe ctx pipe >>= fun ctx ->
-            if ctx.retcode <> 0 then interpret_or_pipes ctx tl else return ctx
-        | _ -> return ctx)
+    | hd :: tl ->
+      (match hd with
+       | Pipe pipe ->
+         interpret_pipe ctx pipe
+         >>= fun ctx -> if ctx.retcode <> 0 then interpret_or_pipes ctx tl else return ctx
+       | _ -> return ctx)
     | [] -> return ctx
 
   (** Interprets command list, command after command *)
   and interpret_command_list ctx list =
     match list with
     | hd :: tl ->
-        interpret_command ctx hd >>= fun new_ctx ->
-        interpret_command_list new_ctx tl
+      interpret_command ctx hd >>= fun new_ctx -> interpret_command_list new_ctx tl
     | [] -> return ctx
 
   and interpret_pipeline ctx pipe =
@@ -816,6 +851,6 @@ module Interpret (M : MonadFail) = struct
   (** Interprets all script *)
   and interpret_bash ctx = function
     | [] -> return ctx
-    | h :: t ->
-        interpret_declaration ctx h >>= fun new_ctx -> interpret_bash new_ctx t
+    | h :: t -> interpret_declaration ctx h >>= fun new_ctx -> interpret_bash new_ctx t
+  ;;
 end

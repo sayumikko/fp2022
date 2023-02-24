@@ -10,16 +10,16 @@ let rec run ctx =
     | Error e ->
         print_endline ("INTERPRETER ERROR: " ^ e);
         run ctx
-    | Ok new_ctx -> run new_ctx
+    | Ok new_ctx ->
+        print_endline "";
+        run new_ctx
   in
   let input = parse (ast_parser ()) (read_line ()) in
   match input with
   | Error e ->
       print_endline ("PARSER ERROR: " ^ e);
       run ctx
-  | Ok b ->
-      print_endline "";
-      interpret_parsed b
+  | Ok b -> interpret_parsed b
 
 let () =
   print_endline "bash: (Ctrl+D to enter) (Ctrl+C to stop)";

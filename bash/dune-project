@@ -15,7 +15,7 @@
 (homepage "https://github.com/sayumikko/fp2022")
 
 (package
- (name Bash)
+ (name bash)
  (synopsis "An interpreter for Bash language")
  (description
   "Supports functions, compound, extensions, working with arrays and redirects")

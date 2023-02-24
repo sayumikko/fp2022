@@ -1192,7 +1192,7 @@ let%test _ =
          ])
 
 let%test _ =
-  parse (pipeline_parser ()) "cmd | cmd && cmd | cmd"
+  parse (pipeline_parser ()) "cmd | cmd || cmd | cmd"
   = Ok
       (OrList
          [

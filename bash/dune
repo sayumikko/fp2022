@@ -10,7 +10,7 @@
  (name REPL)
  (public_name REPL)
  (modules REPL)
- (libraries Bash.Lib))
+ (libraries bash.Lib))
 
 (cram
  (deps ./REPL.exe %{bin:REPL}))

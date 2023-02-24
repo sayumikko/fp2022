@@ -1,6 +1,6 @@
 (library
  (name bash_lib)
- (public_name Bash.Lib)
+ (public_name bash.Lib)
  (modules Ast Parser Interpreter)
  (libraries angstrom base re unix stdio str)
  (inline_tests)

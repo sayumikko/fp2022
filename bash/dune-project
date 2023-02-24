@@ -26,7 +26,6 @@
   qcheck-core
   re
   stdio
-  str
   ppx_expect
   ppx_deriving
   (odoc :with-doc)

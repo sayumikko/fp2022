@@ -181,9 +181,9 @@ Expansions
   > echo a{d,c,b}e
   > EOF
   ade
-  ace
-  abe
-  
+   ace
+   abe
+   
   Succeeded with retcode 0
 
   $ ./demoInterpreter.exe <<-"EOF"

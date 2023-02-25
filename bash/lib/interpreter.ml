@@ -318,7 +318,7 @@ module Interpret (M : MonadFail) = struct
       | hd :: tl ->
         (match hd with
          | Const (String str) ->
-           return (List.append list [ beg ^ str ^ ending ])
+           return (List.append list [ Format.sprintf "%s%s%s" beg str ending ])
            >>= fun list -> interpret_bexp ctx tl list
          | _ -> interpret_bexp ctx tl list)
       | [] -> return { ctx with last_exec = StringList list }
@@ -691,7 +691,7 @@ module Interpret (M : MonadFail) = struct
     in
     let rec interpret_sl sl str =
       match sl with
-      | hd :: tl -> interpret_sl tl (str ^ hd)
+      | hd :: tl -> interpret_sl tl (Format.sprintf "%s%s " str hd)
       | [] -> str
     in
     let to_string = function
@@ -722,10 +722,8 @@ module Interpret (M : MonadFail) = struct
     >>= fun (arg_arr, redir_list) ->
     interpret_redirection ctx redir_list
     >>= fun new_ctx ->
-    interpret_program
-      name
-      (name :: Array.to_list arg_arr)
-      { ctx with last_exec = new_ctx.last_exec; chs = oldchs }
+    interpret_program name (name :: Array.to_list arg_arr) new_ctx
+    >>= fun nctx -> return { nctx with chs = oldchs }
 
   (** Interprets user function *)
   and interpret_func ctx name args =
@@ -798,8 +796,7 @@ module Interpret (M : MonadFail) = struct
     | [] -> fail "More than one command should be in a pipe"
 
   (** Interprets and-pipeline (continues only if the left side is true) *)
-  and interpret_and_pipes ctx pipes =
-    match pipes with
+  and interpret_and_pipes ctx = function
     | hd :: tl ->
       (match hd with
        | Pipe pipe ->

@@ -1,3 +1,7 @@
+(** Copyright 2022-2023, Kseniia Kuzmina *)
+
+(** SPDX-License-Identifier: LGPL-3.0-or-later *)
+
 type command =
   | SimpleCommand of string * expr list
   | Compound of compound

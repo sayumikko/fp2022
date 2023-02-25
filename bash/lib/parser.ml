@@ -1,3 +1,7 @@
+(** Copyright 2022-2023, Kseniia Kuzmina *)
+
+(** SPDX-License-Identifier: LGPL-3.0-or-later *)
+
 open Angstrom
 open Ast
 
@@ -40,8 +44,7 @@ let is_newline = function
   | _ -> false
 ;;
 
-let is_special_character c =
-  match c with
+let is_special_character = function
   | '|' | '&' | ';' | '(' | ')' | '<' | '>' -> true
   | c when is_whitespace c -> true
   | _ -> false

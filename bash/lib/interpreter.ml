@@ -1,3 +1,7 @@
+(** Copyright 2022-2023, Kseniia Kuzmina *)
+
+(** SPDX-License-Identifier: LGPL-3.0-or-later *)
+
 open Ast
 
 module type MonadFail = sig
@@ -5,9 +9,6 @@ module type MonadFail = sig
 
   val return : 'a -> 'a t
   val fail : string -> 'a t
-  val ( <|> ) : 'a t -> 'a t -> 'a t
-  val ( *> ) : 'a t -> 'b -> 'b t
-  val ( <* ) : 'a t -> 'b -> 'a t
 end
 
 module Result : MonadFail with type 'a t = ('a, string) result = struct
@@ -178,8 +179,7 @@ module Interpret (M : MonadFail) = struct
   (** Adds an indexed array to the current context *)
   and set_array ctx name value args_list =
     let ret_wv x c = return { c with vars = VarsMap.replace name x c.vars } in
-    let to_string iconst =
-      match iconst with
+    let to_string = function
       | Int i -> return (string_of_int i)
       | Bool b -> return (string_of_bool b)
       | String s -> return s
@@ -209,8 +209,7 @@ module Interpret (M : MonadFail) = struct
   (** Adds an associative array to the current context *)
   and set_associative_array ctx name value args_list =
     let ret_wv x c = return { c with vars = VarsMap.replace name x c.vars } in
-    let to_string iconst =
-      match iconst with
+    let to_string = function
       | Int i -> return (string_of_int i)
       | Bool b -> return (string_of_bool b)
       | String s -> return s
@@ -256,8 +255,7 @@ module Interpret (M : MonadFail) = struct
     | _ -> return ctx
 
   (** Interprets redirections *)
-  and interpret_redirection ctx redir =
-    match redir with
+  and interpret_redirection ctx = function
     | hd :: tl ->
       (match hd with
        | RedirectInput (Const (String in_redir)) ->
@@ -331,8 +329,7 @@ module Interpret (M : MonadFail) = struct
 
   (** Interprets bash "weak" quoting *)
   and interpret_double_quotes double_q ctx str =
-    let matching_iconst str =
-      match str with
+    let matching_iconst = function
       | Bool s -> return (string_of_bool s)
       | Int s -> return (string_of_int s)
       | String s -> return s
@@ -347,9 +344,8 @@ module Interpret (M : MonadFail) = struct
     | _ -> return { ctx with last_exec = String str }
 
   (** Interprets var by name and index trying to replace the type where possible *)
-  and interpret_variable ctx var =
-    let interpret_value v =
-      match v with
+  and interpret_variable ctx =
+    let interpret_value = function
       | Int n -> return { ctx with last_exec = Int n }
       | Bool b -> return { ctx with last_exec = Bool b }
       | String s ->
@@ -361,7 +357,7 @@ module Interpret (M : MonadFail) = struct
             | None -> return { ctx with last_exec = String s }))
       | _ -> return ctx
     in
-    match var with
+    function
     | name, i ->
       (match get_var name ctx with
        | Some v ->
@@ -595,15 +591,13 @@ module Interpret (M : MonadFail) = struct
 
   (** Interprets bash case *)
   and interpret_case ctx variable list =
-    let to_string iconst =
-      match iconst with
+    let to_string = function
       | Int i -> return (string_of_int i)
       | Bool b -> return (string_of_bool b)
       | String s -> return s
       | _ -> fail "Wrong pattern"
     in
-    let rec interpret_pattern ctx pat =
-      match pat with
+    let rec interpret_pattern ctx = function
       | hd :: tl ->
         interpret_expression hd ctx
         >>= fun pat_ctx ->
@@ -621,15 +615,13 @@ module Interpret (M : MonadFail) = struct
          (match hd with
           | pattern, block ->
             interpret_pattern new_ctx pattern
-            >>= fun expr ->
-            (match expr with
-             | Const (String "") -> interpret_case new_ctx variable tl
-             | _ -> interpret_command_list new_ctx block))
+            >>= (function
+            | Const (String "") -> interpret_case new_ctx variable tl
+            | _ -> interpret_command_list new_ctx block))
        | [] -> return ctx)
     | _ -> return ctx
 
-  and interpret_compound ctx compound =
-    match compound with
+  and interpret_compound ctx = function
     | IfElse (condition, block, else_block) ->
       interpret_ifelse ctx condition block else_block
     | While (condition, block) -> interpret_while ctx condition block
@@ -640,8 +632,7 @@ module Interpret (M : MonadFail) = struct
 
   (* Commands *)
 
-  and interpret_var_assignment ctx variable =
-    match variable with
+  and interpret_var_assignment ctx = function
     | SimpleVar ((var, index), value) -> set_var ctx var index value
     | Array (name, value) -> set_array ctx name value []
     | AssociativeArray (name, value) -> set_associative_array ctx name value []
@@ -692,15 +683,18 @@ module Interpret (M : MonadFail) = struct
       (* Forking *)
       match fork () with
       | 0 -> interpret_p program args
-      | pid -> wait_process pid
+      | pid ->
+        Sys.catch_break true;
+        let res = wait_process pid in
+        Sys.catch_break false;
+        res
     in
     let rec interpret_sl sl str =
       match sl with
       | hd :: tl -> interpret_sl tl (str ^ hd)
       | [] -> str
     in
-    let to_string iconst =
-      match iconst with
+    let to_string = function
       | Int i -> string_of_int i
       | Bool b -> string_of_bool b
       | String s -> s
@@ -736,8 +730,7 @@ module Interpret (M : MonadFail) = struct
   (** Interprets user function *)
   and interpret_func ctx name args =
     let args_length = List.length args in
-    let rec interpret_args ctx args =
-      match args with
+    let rec interpret_args ctx = function
       | hd :: tl ->
         set_var ctx (string_of_int (args_length - List.length tl)) "0" hd
         >>= fun new_ctx -> interpret_args new_ctx tl
@@ -749,8 +742,7 @@ module Interpret (M : MonadFail) = struct
     | None -> return ctx
 
   and interpret_command ctx cmd =
-    let matching_iconst var =
-      match var with
+    let matching_iconst = function
       | Bool s -> return (string_of_bool s) >>= fun s -> return (s, [])
       | Int s -> return (string_of_int s) >>= fun s -> return (s, [])
       | StringList sl ->
@@ -759,10 +751,9 @@ module Interpret (M : MonadFail) = struct
          | [] -> return ("", []))
       | String s ->
         return (Str.split (Str.regexp " ") s)
-        >>= fun sl ->
-        (match sl with
-         | hd :: tl -> return (hd, tl)
-         | [] -> return ("", []))
+        >>= (function
+        | hd :: tl -> return (hd, tl)
+        | [] -> return ("", []))
     in
     let rec expr_of_str str_list help_list =
       match str_list with
@@ -786,8 +777,7 @@ module Interpret (M : MonadFail) = struct
 
   (** Interprets pipeline, connecting stdin and stdout *)
   and interpret_pipe ctx pipe =
-    let rec process_pipe cl_read ctx cmd pipe =
-      match pipe with
+    let rec process_pipe cl_read ctx cmd = function
       | hd :: tl ->
         let read_end, write_end = Unix.pipe () in
         interpret_command { ctx with chs = IMap.add 1 write_end ctx.chs } cmd
@@ -819,8 +809,7 @@ module Interpret (M : MonadFail) = struct
     | [] -> return ctx
 
   (** Interprets or-pipeline (when the left side is true, pipeline finishes) *)
-  and interpret_or_pipes ctx pipes =
-    match pipes with
+  and interpret_or_pipes ctx = function
     | hd :: tl ->
       (match hd with
        | Pipe pipe ->
@@ -830,14 +819,12 @@ module Interpret (M : MonadFail) = struct
     | [] -> return ctx
 
   (** Interprets command list, command after command *)
-  and interpret_command_list ctx list =
-    match list with
+  and interpret_command_list ctx = function
     | hd :: tl ->
       interpret_command ctx hd >>= fun new_ctx -> interpret_command_list new_ctx tl
     | [] -> return ctx
 
-  and interpret_pipeline ctx pipe =
-    match pipe with
+  and interpret_pipeline ctx = function
     | Pipe pipe -> interpret_pipe ctx pipe
     | AndList andpipe -> interpret_and_pipes ctx andpipe
     | OrList orpipe -> interpret_or_pipes ctx orpipe

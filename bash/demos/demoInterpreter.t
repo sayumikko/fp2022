@@ -78,15 +78,11 @@ Function (2 variants + recursion)
   Succeeded with retcode 0
 
   $ ./demoInterpreter.exe <<-"EOF"
-  > F0=0
-  > F1=1
   > 
   > function fib {
-  >   a=$F0
-  >   b=$F1
+  >   a=0
+  >   b=1
   >   N=$1
-  > 
-  >   echo $a
   > 
   >   for((i=1;i<N;i++)) do
   >     echo $a
@@ -98,7 +94,6 @@ Function (2 variants + recursion)
   > 
   > fib 9
   > EOF
-  0
   0
   1
   1

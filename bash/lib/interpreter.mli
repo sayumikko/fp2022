@@ -7,6 +7,7 @@ module type MonadFail = sig
 
   val return : 'a -> 'a t
   val fail : string -> 'a t
+  val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
 end
 
 type iconst =

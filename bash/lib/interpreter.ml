@@ -9,6 +9,7 @@ module type MonadFail = sig
 
   val return : 'a -> 'a t
   val fail : string -> 'a t
+  val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
 end
 
 module Result : MonadFail with type 'a t = ('a, string) result = struct
@@ -20,6 +21,7 @@ module Result : MonadFail with type 'a t = ('a, string) result = struct
   let ( >>| ) f g = f >>= fun x -> return (g x)
   let ( *> ) f g = f >>= fun _ -> return g
   let ( <* ) f g = f >>= fun e -> return g >>= fun _ -> return e
+  let ( let* ) = ( >>= )
 
   let ( <|> ) f g =
     match f with
@@ -57,7 +59,7 @@ end = struct
   let find_opt = M.find_opt
   let replace k v t = M.update k (fun _ -> Some v) t
   let empty = M.empty
-  let from_val init = replace "0" init M.empty
+  let from_val init = M.singleton "0" init
 end
 
 let c2icl = function
@@ -164,6 +166,13 @@ module Interpret (M : MonadFail) = struct
     }
   ;;
 
+  let matching_iconst_string = function
+    | Bool s -> return (string_of_bool s)
+    | Int s -> return (string_of_int s)
+    | String s -> return s
+    | _ -> return ""
+  ;;
+
   (** Finds a variable by name *)
   let rec get_var name ctx = VarsMap.find_opt name ctx.vars
 
@@ -255,29 +264,18 @@ module Interpret (M : MonadFail) = struct
     | _ -> return ctx
 
   (** Interprets redirections *)
-  and interpret_redirection ctx = function
+  and interpret_redirection ctx =
+    let redirect file flags descr =
+      return { ctx with chs = IMap.add descr Unix.(openfile file flags 0o640) ctx.chs }
+    in
+    function
     | hd :: tl ->
       (match hd with
-       | RedirectInput (Const (String in_redir)) ->
-         return
-           { ctx with
-             chs = IMap.add 0 Unix.(openfile in_redir [ O_RDONLY ] 0o640) ctx.chs
-           }
+       | RedirectInput (Const (String in_redir)) -> redirect in_redir [ O_RDONLY ] 0
        | RedirectOutput (Const (String out_redir)) ->
-         return
-           { ctx with
-             chs =
-               IMap.add 1 Unix.(openfile out_redir [ O_CREAT; O_WRONLY ] 0o640) ctx.chs
-           }
+         redirect out_redir [ O_CREAT; O_WRONLY ] 1
        | AppendRedirOutput (Const (String app_redir)) ->
-         return
-           { ctx with
-             chs =
-               IMap.add
-                 1
-                 Unix.(openfile app_redir [ O_CREAT; O_WRONLY; O_APPEND ] 0o640)
-                 ctx.chs
-           }
+         redirect app_redir [ O_CREAT; O_WRONLY; O_APPEND ] 1
        | _ -> return ctx)
       >>= fun new_ctx -> interpret_redirection new_ctx tl
     | [] -> return ctx
@@ -299,18 +297,12 @@ module Interpret (M : MonadFail) = struct
   and interpret_brace_expansion ctx bexp =
     let beg =
       match bexp with
-      | hd :: _ ->
-        (match hd with
-         | Const (String str) -> str
-         | _ -> "")
+      | Const (String str) :: _ -> str
       | _ -> ""
     in
     let ending =
       match bexp with
-      | _ :: ending :: _ ->
-        (match ending with
-         | Const (String str) -> str
-         | _ -> "")
+      | _ :: Const (String str) :: _ -> str
       | _ -> ""
     in
     let rec interpret_bexp ctx bexp list =
@@ -329,17 +321,11 @@ module Interpret (M : MonadFail) = struct
 
   (** Interprets bash "weak" quoting *)
   and interpret_double_quotes double_q ctx str =
-    let matching_iconst = function
-      | Bool s -> return (string_of_bool s)
-      | Int s -> return (string_of_int s)
-      | String s -> return s
-      | _ -> return ""
-    in
     match double_q with
     | hd :: tl ->
       interpret_expression hd ctx
       >>= fun new_ctx ->
-      matching_iconst new_ctx.last_exec
+      matching_iconst_string new_ctx.last_exec
       >>= fun new_str -> interpret_double_quotes tl new_ctx (str ^ new_str)
     | _ -> return { ctx with last_exec = String str }
 
@@ -381,17 +367,12 @@ module Interpret (M : MonadFail) = struct
 
   (** Interperts bash parameter expansion *)
   and interpret_param_expansion pexp ctx =
-    let matching_iconst var =
+    let var_to_str var =
       interpret_variable ctx var
-      >>= fun new_ctx ->
-      match new_ctx.last_exec with
-      | Bool s -> return (string_of_bool s)
-      | Int s -> return (string_of_int s)
-      | String s -> return s
-      | _ -> return ""
+      >>= fun new_ctx -> matching_iconst_string new_ctx.last_exec
     in
     let removing reg_size ~all ~beg var pat s =
-      matching_iconst var
+      var_to_str var
       >>= fun str ->
       match str, Base.String.for_all str ~f:(fun c -> c = '*') with
       | "", true -> return { ctx with last_exec = String "" }
@@ -412,56 +393,42 @@ module Interpret (M : MonadFail) = struct
           }
     in
     let turn_regexp pat = return (Str.regexp pat) in
+    let return_param icnst = return { ctx with last_exec = icnst } in
     match pexp with
     | Offset (var, Const (Int offset)) ->
-      matching_iconst var
-      >>= fun s ->
-      return
-        { ctx with last_exec = String (String.sub s offset (String.length s - offset)) }
+      var_to_str var
+      >>= fun s -> return_param (String (String.sub s offset (String.length s - offset)))
     | OffsetLen (var, Const (Int offset), Const (Int len)) ->
-      matching_iconst var
-      >>= fun s -> return { ctx with last_exec = String (String.sub s offset len) }
-    | Length var ->
-      matching_iconst var
-      >>= fun s -> return { ctx with last_exec = Int (String.length s) }
+      var_to_str var >>= fun s -> return_param (String (String.sub s offset len))
+    | Length var -> var_to_str var >>= fun s -> return_param (Int (String.length s))
     | ReplFirst (var, Const (String pat), Const (String str)) ->
-      matching_iconst var
+      var_to_str var
       >>= fun s ->
-      turn_regexp pat
-      >>= fun pat -> return { ctx with last_exec = String (Str.replace_first pat str s) }
+      turn_regexp pat >>= fun pat -> return_param (String (Str.replace_first pat str s))
     | ReplAll (var, Const (String pat), Const (String str)) ->
-      matching_iconst var
+      var_to_str var
       >>= fun s ->
-      turn_regexp pat
-      >>= fun pat -> return { ctx with last_exec = String (Str.global_replace pat str s) }
+      turn_regexp pat >>= fun pat -> return_param (String (Str.global_replace pat str s))
     | ReplBeg (var, Const (String pat), Const (String str)) ->
-      matching_iconst var
-      >>= fun s ->
-      turn_regexp pat
-      >>= fun re ->
+      let* s = var_to_str var in
+      let* re = turn_regexp pat in
       if Str.string_match re s 0
-      then return { ctx with last_exec = String (Str.replace_first re str s) }
-      else return { ctx with last_exec = String s }
+      then return_param (String (Str.replace_first re str s))
+      else return_param (String s)
     | ReplEnd (var, Const (String pat), Const (String str)) ->
-      matching_iconst var
-      >>= fun str_to_rep ->
-      turn_regexp pat
-      >>= fun re ->
-      return (Str.search_backward re str_to_rep (String.length str_to_rep))
-      >>= fun pos ->
+      let* str_to_rep = var_to_str var in
+      let* re = turn_regexp pat in
+      let* pos = return (Str.search_backward re str_to_rep (String.length str_to_rep)) in
       if pos >= String.length str_to_rep - String.length pat
       then
-        return
-          { ctx with
-            last_exec =
-              String
-                (String.sub str_to_rep 0 pos
-                ^ Str.replace_first
-                    re
-                    str
-                    (String.sub str_to_rep pos (String.length str_to_rep - pos)))
-          }
-      else return { ctx with last_exec = String str_to_rep }
+        return_param
+          (String
+             (String.sub str_to_rep 0 pos
+             ^ Str.replace_first
+                 re
+                 str
+                 (String.sub str_to_rep pos (String.length str_to_rep - pos))))
+      else return_param (String str_to_rep)
     | RemShortFromBeg (var, Const (String pat)) ->
       removing Re.shortest ~all:false ~beg:(Some true) var pat ""
     | RemLargFromBeg (var, Const (String pat)) ->
@@ -475,8 +442,8 @@ module Interpret (M : MonadFail) = struct
        | Some v ->
          (match ConstMap.find_opt index v with
           | Some _ -> interpret_variable ctx (name, index)
-          | None -> return { ctx with last_exec = String word })
-       | None -> return { ctx with last_exec = String word })
+          | None -> return_param (String word))
+       | None -> return_param (String word))
     | SetDefValue ((name, index), Const (String word)) ->
       (match get_var name ctx with
        | Some v ->
@@ -485,10 +452,10 @@ module Interpret (M : MonadFail) = struct
             interpret_variable ctx (name, index)
             >>= fun new_ctx ->
             (match new_ctx.last_exec with
-             | String "" -> return { new_ctx with last_exec = String word }
+             | String "" -> return_param (String word)
              | _ -> return new_ctx)
-          | None -> return { ctx with last_exec = String word })
-       | None -> return { ctx with last_exec = String word })
+          | None -> return_param (String word))
+       | None -> return_param (String word))
     | UseAlterValue ((name, index), Const (String word)) ->
       (match get_var name ctx with
        | Some v ->
@@ -498,7 +465,7 @@ module Interpret (M : MonadFail) = struct
             >>= fun new_ctx ->
             (match new_ctx.last_exec with
              | String "" -> return new_ctx
-             | _ -> return { new_ctx with last_exec = String word })
+             | _ -> return_param (String word))
           | None -> return ctx)
        | None -> return ctx)
     | _ -> return ctx
@@ -740,7 +707,7 @@ module Interpret (M : MonadFail) = struct
     | None -> return ctx
 
   and interpret_command ctx cmd =
-    let matching_iconst = function
+    let interpret_args = function
       | Bool s -> return (string_of_bool s) >>= fun s -> return (s, [])
       | Int s -> return (string_of_int s) >>= fun s -> return (s, [])
       | StringList sl ->
@@ -769,7 +736,7 @@ module Interpret (M : MonadFail) = struct
     | Expression expr ->
       interpret_expression expr ctx
       >>= fun new_ctx ->
-      matching_iconst new_ctx.last_exec
+      interpret_args new_ctx.last_exec
       >>= fun (name, args) ->
       expr_of_str args [] >>= fun args -> interpret_simple_command new_ctx name args
 
